@@ -1,0 +1,39 @@
+# FastAPI
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+python-multipart==0.0.9
+
+# Database
+sqlalchemy==2.0.27
+psycopg[binary]>=3.1
+alembic==1.13.1
+
+# Validation
+pydantic>=2.12.5
+pydantic-settings==2.1.0
+email-validator==2.1.0
+
+# XML Processing
+lxml>=5.2.1
+xmlschema==3.0.2
+
+# HTTP Client
+httpx>=0.28.1
+
+# KSeF API
+ksef2>=0.7.0
+
+# Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt
+cryptography
+
+# Utils
+python-dateutil==2.8.2
+pytz==2024.1
+
+# Development
+pytest==7.4.4
+pytest-asyncio==0.23.4
+black==24.1.1
