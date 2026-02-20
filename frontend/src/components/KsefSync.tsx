@@ -1,69 +1,66 @@
-import { useState } from 'react';
-import { RefreshCw, Download, AlertCircle } from 'lucide-react';
-import { toast } from 'react-hot-toast';
-import { ksefApi, SyncResponse } from '../services/api';
+import { useState } from "react";
+import { toast } from "react-hot-toast";
+import { ksefApi } from "../services/api";
 
 interface KsefSyncProps {
-  onSyncComplete?: (data: SyncResponse) => void;
+  onSyncComplete?: () => void;
 }
+
+const today = new Date();
+const weekAgo = new Date(today);
+weekAgo.setDate(today.getDate() - 7);
+const formatDate = (d: Date) => d.toISOString().slice(0, 10);
 
 export default function KsefSync({ onSyncComplete }: KsefSyncProps) {
   const [loading, setLoading] = useState(false);
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [dateFrom, setDateFrom] = useState(formatDate(weekAgo));
+  const [dateTo, setDateTo] = useState(formatDate(today));
 
   const handleSync = async () => {
-    setLoading(true);
     try {
-      const response = await ksefApi.syncInvoices(dateFrom, dateTo);
-      toast.success(response.message);
-      onSyncComplete?.(response);
+      setLoading(true);
+      const result = await ksefApi.syncInvoices(dateFrom, dateTo);
+      toast.success(result.message ?? "Synchronizacja zakończona.");
+      onSyncComplete?.();
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || 'Błąd synchronizacji z KSeF');
+      toast.error(
+        "Błąd synchronizacji: " +
+          (error?.response?.data?.detail || error?.message || "Nieznany błąd")
+      );
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border p-6 mb-6">
-      <h2 className="text-xl font-semibold mb-4 flex items-center">
-        <RefreshCw className="w-5 h-5 mr-2" />
-        Synchronizacja z KSeF
-      </h2>
-      
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Od daty
-          </label>
-          <input
-            type="date"
-            value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Do daty
-          </label>
-          <input
-            type="date"
-            value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-green-500"
-          />
-        </div>
+    <div className="mb-4 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+      <div className="flex items-center gap-2 text-sm text-gray-700">
+        <span>Zakres dat:</span>
+        <input
+          type="date"
+          value={dateFrom}
+          onChange={(e) => setDateFrom(e.target.value)}
+          className="border rounded px-2 py-1 text-sm"
+        />
+        <span>-</span>
+        <input
+          type="date"
+          value={dateTo}
+          onChange={(e) => setDateTo(e.target.value)}
+          className="border rounded px-2 py-1 text-sm"
+        />
       </div>
 
       <button
+        type="button"
         onClick={handleSync}
         disabled={loading}
-        className="flex items-center space-x-2 px-6 py-3 bg-green-600 text-white font-medium rounded-lg shadow hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        className={`inline-flex items-center rounded-md border border-transparent bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${
+          loading ? "opacity-60 cursor-not-allowed" : ""
+        }`}
       >
-        <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
-        <span>{loading ? 'Synchronizacja...' : 'Pobierz faktury z KSeF'}</span>
+        <span className="mr-2">🔄</span>
+        {loading ? "Synchronizuję..." : "Sync KSeF"}
       </button>
     </div>
   );

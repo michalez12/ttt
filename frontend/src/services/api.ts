@@ -1,121 +1,152 @@
-import axios from 'axios';
+import axios from "axios";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-
-// Token z localStorage
-const getToken = () => localStorage.getItem('api_token');
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 const api = axios.create({
-  baseURL: API_BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  baseURL: API_URL,
+  withCredentials: true,
 });
 
-// Interceptor dla Bearer Token
 api.interceptors.request.use((config) => {
-  const token = getToken();
+  const token = localStorage.getItem("api_token");
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
 });
 
-// Types
+export interface Kontrahent {
+  id: number;
+  nazwa: string;
+  nip: string;
+}
+
+export interface RachunekBankowy {
+  id: number;
+  iban: string;
+  nazwa_banku: string | null;
+  status_biala_lista: string | null;
+}
+
 export interface Faktura {
   id: number;
-  numer_ksef: string;
   numer_faktury: string;
-  kontrahent: {
-    id: number;
-    nazwa: string;
-    nip: string;
-  };
-  rachunek: {
-    iban: string;
-    bank: string;
-    status_biala_lista: string;
-  } | null;
-  data_wystawienia: string;
+  numer_ksef: string | null;
+  data_wystawienia: string | null;
   termin_platnosci: string | null;
+  kwota_netto: number;
+  kwota_vat: number;
   kwota_brutto: number;
   waluta: string;
-  forma_platnosci: number;
-  forma_platnosci_nazwa: string;
   status: string;
-  kolor: string;
+  forma_platnosci: number;
   czy_do_eksportu: boolean;
+  kolor: string | null;
+  kontrahent: Kontrahent | null;
+  rachunek: RachunekBankowy | null;
 }
 
-export interface SyncResponse {
-  success: boolean;
-  nowe_faktury: number;
-  zaktualizowane: number;
-  message: string;
+export interface FakturyListResponse {
+  items: Faktura[];
+  total: number;
 }
 
-// API Methods
 export const ksefApi = {
+  // Autoryzacja
+  login: async (apiToken: string) => {
+    const response = await api.post("/api/auth/login", {
+      api_token: apiToken,
+    });
+    return response.data;
+  },
+
+  me: async () => {
+    const response = await api.get("/api/auth/me");
+    return response.data;
+  },
+
+  logout: async () => {
+    const response = await api.post("/api/auth/logout");
+    return response.data;
+  },
+
   // Synchronizacja z KSeF
-  syncInvoices: async (dateFrom?: string, dateTo?: string): Promise<SyncResponse> => {
+  syncInvoices: async (
+    dateFrom?: string,
+    dateTo?: string
+  ): Promise<{
+    success: boolean;
+    nowe_faktury: number;
+    zaktualizowane: number;
+    message: string;
+  }> => {
     const params = new URLSearchParams();
-    if (dateFrom) params.append('date_from', dateFrom);
-    if (dateTo) params.append('date_to', dateTo);
-    
+    if (dateFrom) params.append("date_from", dateFrom);
+    if (dateTo) params.append("date_to", dateTo);
+
     const response = await api.post(`/api/ksef/sync?${params.toString()}`);
     return response.data;
   },
-  
+
   // Faktury
-  getFaktury: async (params?: {
-    status?: string;
-    forma_platnosci?: number;
-    kolor?: string;
-    tylko_do_eksportu?: boolean;
-    search?: string;
-    skip?: number;
-    limit?: number;
-  }) => {
-    const response = await api.get('/api/faktury', { params });
+  getFaktury: async (): Promise<FakturyListResponse> => {
+    const response = await api.get("/api/faktury");
     return response.data;
   },
-  
-  getFaktura: async (id: number) => {
-    const response = await api.get(`/api/faktury/${id}`);
-    return response.data;
-  },
-  
-  updateFaktura: async (id: number, data: { status?: string; notatka?: string }) => {
-    const response = await api.put(`/api/faktury/${id}`, null, { params: data });
-    return response.data;
-  },
-  
+
   verifyFaktura: async (id: number) => {
     const response = await api.post(`/api/faktury/${id}/verify`);
     return response.data;
   },
-  
-  // Eksport
-  generateExport: async (fakturaIds: number[]) => {
-    const response = await api.post('/api/eksport/generate', { faktura_ids: fakturaIds });
-    return response.data;
-  },
-  
-  getExportHistory: async (skip = 0, limit = 50) => {
-    const response = await api.get('/api/eksport/history', { params: { skip, limit } });
-    return response.data;
-  },
-  
-  downloadExport: async (id: number) => {
-    const response = await api.get(`/api/eksport/${id}/download`, {
-      responseType: 'blob',
+
+  updateFakturaStatus: async (id: number, status: string) => {
+    const response = await api.patch(`/api/faktury/${id}/status`, null, {
+      params: { status },
     });
     return response.data;
   },
-  
+
+  // Eksport
+  generateExport: async (ids: number[]) => {
+    const response = await api.post("/api/eksport/generate", ids);
+    return response.data;
+  },
+
+  downloadExport: async (id: number) => {
+    const response = await api.get(`/api/eksport/eksport/${id}/download`, {
+      responseType: "blob",
+    });
+    return response.data;
+  },
+
+  getExportHistory: async (skip = 0, limit = 50) => {
+    const response = await api.get("/api/eksport/history", {
+      params: { skip, limit },
+    });
+    return response.data;
+  },
+
   // Kontrahenci
   getKontrahenci: async (search?: string) => {
-    const response = await api.get('/api/kontrahenci', { params: { search } });
+    const response = await api.get("/api/kontrahenci", {
+      params: { search },
+    });
+    return response.data;
+  },
+
+  // Profil firmy
+  getProfileFirma: async () => {
+    const response = await api.get("/api/profile/firma");
+    return response.data;
+  },
+
+  updateProfileFirma: async (payload: {
+    firma_nazwa: string | null;
+    firma_nip: string | null;
+    firma_rachunek: string | null;
+    ksef_token: string | null;
+  }) => {
+    const response = await api.put("/api/profile/firma", payload);
     return response.data;
   },
 };

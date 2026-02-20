@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..api.deps import get_current_user
-from ..models import User, Faktura, EksportBank
+from ..models import User, Faktura
+from ..models.eksport import EksportBank
 from ..services.bank_generator import BankXMLGenerator
 
 router = APIRouter(prefix="/api/eksport", tags=["Eksport"])
@@ -21,20 +22,27 @@ async def generate_bank_xml(
     """
     Generuje plik XML dla banku (pain.001.001.09) na podstawie wybranych faktur.
     """
-    faktury = db.query(Faktura).filter(Faktura.id.in_(faktura_ids)).all()
 
+    faktury = db.query(Faktura).filter(Faktura.id.in_(faktura_ids)).all()
     if not faktury:
         raise HTTPException(status_code=404, detail="Nie znaleziono faktur")
 
-    invalid_faktury = []
+    invalid_faktury: list[dict] = []
 
     for faktura in faktury:
-        if faktura.forma_platnosci != "6":
+        # Normalizacja kodu formy płatności do stringa
+        kod = (
+            str(faktura.forma_platnosci).strip()
+            if faktura.forma_platnosci is not None
+            else ""
+        )
+
+        if kod != "6":
             invalid_faktury.append(
                 {
                     "id": faktura.id,
                     "numer": faktura.numer_faktury,
-                    "reason": "Forma pĹ‚atnoĹ›ci nie jest przelewem",
+                    "reason": "Forma płatności nie jest przelewem",
                 }
             )
         elif not faktura.rachunek:
@@ -45,29 +53,18 @@ async def generate_bank_xml(
                     "reason": "Brak rachunku bankowego",
                 }
             )
-        elif (
-            faktura.rachunek.status_biala_lista not in ["ZWERYFIKOWANY"]
-            and not getattr(faktura.rachunek, "ignore_biala_lista", False)
-        ):
-            invalid_faktury.append(
-                {
-                    "id": faktura.id,
-                    "numer": faktura.numer_faktury,
-                    "reason": "Rachunek niezweryfikowany w BiaĹ‚ej LiĹ›cie VAT",
-                }
-            )
+        # brak sprawdzania status_biala_lista – dowolny rachunek przechodzi
 
     if invalid_faktury:
         raise HTTPException(
             status_code=400,
             detail={
-                "message": "NiektĂłre faktury nie mogÄ… byÄ‡ wyeksportowane",
+                "message": "Niektóre faktury nie mogą być wyeksportowane",
                 "invalid": invalid_faktury,
             },
         )
 
-    # Dane firmy z profilu uĹĽytkownika
-    # JeĹ›li brak danych w profilu â€“ uĹĽyj wartoĹ›ci domyĹ›lnych
+    # Dane firmy z profilu użytkownika
     firma_data = {
         "nazwa": current_user.firma_nazwa or "Brak nazwy firmy",
         "nip": current_user.firma_nip or "",
@@ -78,11 +75,13 @@ async def generate_bank_xml(
     if not firma_data["rachunek"]:
         raise HTTPException(
             status_code=400,
-            detail="Brak rachunku bankowego w profilu uĹĽytkownika. "
-                   "Zaktualizuj swĂłj profil przed eksportem."
+            detail=(
+                "Brak rachunku bankowego w profilu użytkownika. "
+                "Zaktualizuj swój profil przed eksportem."
+            ),
         )
 
-    faktury_data = []
+    faktury_data: list[dict] = []
     suma_kwot = 0.0
 
     for faktura in faktury:
@@ -106,7 +105,7 @@ async def generate_bank_xml(
 
     nazwa_pliku = f"przelew_{datetime.now().strftime('%Y%m%d%H%M%S')}.xml"
 
-    eksport = Eksport(
+    eksport_record = EksportBank(
         data_eksportu=datetime.now(),
         nazwa_pliku=nazwa_pliku,
         format="XML",
@@ -117,7 +116,7 @@ async def generate_bank_xml(
         sciezka_pliku=None,
     )
 
-    db.add(eksport)
+    db.add(eksport_record)
     db.flush()
 
     for faktura in faktury:
@@ -127,11 +126,11 @@ async def generate_bank_xml(
 
     return {
         "success": True,
-        "eksport_id": eksport.id,
+        "eksport_id": eksport_record.id,
         "nazwa_pliku": nazwa_pliku,
         "liczba_faktur": len(faktury),
         "suma_kwot": suma_kwot,
-        "message": "XML wygenerowany pomyĹ›lnie",
+        "message": "XML wygenerowany pomyślnie",
     }
 
 
@@ -143,23 +142,24 @@ async def get_eksport_history(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Pobiera historiÄ™ eksportĂłw.
+    Pobiera historię eksportów.
     """
-    query = db.query(Eksport).order_by(Eksport.data_eksportu.desc())
-
+    query = db.query(EksportBank).order_by(EksportBank.data_eksportu.desc())
     total = query.count()
     eksporty = query.offset(skip).limit(limit).all()
 
-    result = []
-    for eksport in eksporty:
+    result: list[dict] = []
+    for eksport_record in eksporty:
         result.append(
             {
-                "id": eksport.id,
-                "nazwa_pliku": eksport.nazwa_pliku,
-                "data_eksportu": eksport.data_eksportu.isoformat(),
-                "liczba_faktur": eksport.liczba_faktur,
-                "suma_kwot": float(eksport.laczna_kwota) if eksport.laczna_kwota else 0.0,
-                "status": eksport.status,
+                "id": eksport_record.id,
+                "nazwa_pliku": eksport_record.nazwa_pliku,
+                "data_eksportu": eksport_record.data_eksportu.isoformat(),
+                "liczba_faktur": eksport_record.liczba_faktur,
+                "suma_kwot": float(eksport_record.laczna_kwota)
+                if eksport_record.laczna_kwota
+                else 0.0,
+                "status": eksport_record.status,
             }
         )
 
@@ -180,19 +180,23 @@ async def download_eksport(
     """
     Pobiera plik XML eksportu.
     """
-    eksport = db.query(Eksport).filter(Eksport.id == eksport_id).first()
+    eksport_record = (
+        db.query(EksportBank).filter(EksportBank.id == eksport_id).first()
+    )
 
-    if not eksport:
+    if not eksport_record:
         raise HTTPException(status_code=404, detail="Eksport nie znaleziony")
 
-    if not eksport.plik_xml:
-        raise HTTPException(status_code=404, detail="Brak XML dla tego eksportu")
+    if not eksport_record.plik_xml:
+        raise HTTPException(
+            status_code=404, detail="Brak XML dla tego eksportu"
+        )
 
     return Response(
-        content=eksport.plik_xml,
+        content=eksport_record.plik_xml,
         media_type="application/xml",
         headers={
-            "Content-Disposition": f'attachment; filename="{eksport.nazwa_pliku}"'
+            "Content-Disposition": f'attachment; filename="{eksport_record.nazwa_pliku}"'
         },
     )
 
@@ -204,18 +208,19 @@ async def delete_eksport(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Usuwa eksport (soft delete â€“ zmienia status).
+    Usuwa eksport (soft delete – zmienia status).
     """
-    eksport = db.query(Eksport).filter(Eksport.id == eksport_id).first()
+    eksport_record = (
+        db.query(EksportBank).filter(EksportBank.id == eksport_id).first()
+    )
 
-    if not eksport:
+    if not eksport_record:
         raise HTTPException(status_code=404, detail="Eksport nie znaleziony")
 
-    eksport.status = "ANULOWANY"
+    eksport_record.status = "ANULOWANY"
     db.commit()
 
     return {
         "success": True,
         "message": "Eksport anulowany",
     }
-

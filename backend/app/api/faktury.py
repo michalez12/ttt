@@ -15,7 +15,6 @@ router = APIRouter(prefix="/api/faktury", tags=["Faktury"])
 def import_invoice_xml_bytes(xml_content: bytes, db: Session) -> Faktura:
     """
     Importuje fakturę z treści XML (FA3 z KSeF) do bazy i zwraca obiekt Faktura.
-    Używa tej samej logiki, co upload_faktura_xml.
     """
     parser = KsefInvoiceParser(xml_content.decode("utf-8"))
     fakt_data = parser.parse()
@@ -81,7 +80,7 @@ def import_invoice_xml_bytes(xml_content: bytes, db: Session) -> Faktura:
         if faktura_org:
             faktura_oryginalna_id = faktura_org.id
 
-    # BLOKADA DUPLIKATÓW
+    # BLOKADA DUPLIKATÓW po kontrahencie + numerze faktury
     existing = (
         db.query(Faktura)
         .filter(
@@ -92,6 +91,21 @@ def import_invoice_xml_bytes(xml_content: bytes, db: Session) -> Faktura:
     )
     if existing:
         return existing
+
+    # numer KSeF (jeśli jest w danych)
+    numer_ksef = fakt_data.get("numer_ksef")
+    if numer_ksef:
+        # jeśli już istnieje faktura z tym numerem KSeF, zwróć ją
+        existing_ksef = (
+            db.query(Faktura)
+            .filter(Faktura.numer_ksef == numer_ksef)
+            .first()
+        )
+        if existing_ksef:
+            return existing_ksef
+    else:
+        # brak numeru KSeF w danych – nie generujemy już MANUAL-..., zostawiamy None
+        numer_ksef = None
 
     # Klasyfikacja płatności / korekty
     forma_platnosci_id = fakt_data["payment"]["forma"]
@@ -117,10 +131,7 @@ def import_invoice_xml_bytes(xml_content: bytes, db: Session) -> Faktura:
         )
 
     faktura = Faktura(
-        numer_ksef=fakt_data.get(
-            "numer_ksef",
-            f"MANUAL-{int(datetime.now().timestamp())}",
-        ),
+        numer_ksef=numer_ksef,
         numer_faktury=fakt_data["basic_info"]["numer_faktury"],
         kontrahent_id=kontrahent.id,
         rachunek_id=rachunek_id,
@@ -220,10 +231,10 @@ async def get_faktura(
         joinedload(Faktura.kontrahent),
         joinedload(Faktura.rachunek)
     ).filter(Faktura.id == faktura_id).first()
-    
+
     if not faktura:
         raise HTTPException(status_code=404, detail="Faktura nie znaleziona")
-    
+
     return {
         "id": faktura.id,
         "numer_faktury": faktura.numer_faktury,

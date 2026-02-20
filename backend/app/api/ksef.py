@@ -5,7 +5,7 @@ from typing import Optional
 
 from ..database import get_db
 from ..api.deps import get_current_user
-from ..models import User, Faktura, Kontrahent, RachunekBankowy
+from ..models import User, Kontrahent, RachunekBankowy
 from ..services.ksef_client import KsefInvoiceSync
 from ..services.biala_lista import BialaListaVerifier
 from ..services.payment_classifier import PaymentClassifier
