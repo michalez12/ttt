@@ -25,7 +25,6 @@ class KsefInvoiceParser:
         podmiot2 = self.root.find(f'.//{{{self.ns}}}Podmiot2')
 
         return {
-            # numer_ksef ustawiamy po stronie KsefInvoiceSync
             "basic_info": self._parse_basic_info_fa(fa),
             "seller": self._parse_podmiot(podmiot1),
             "buyer": self._parse_podmiot(podmiot2),
@@ -134,16 +133,31 @@ class KsefInvoiceParser:
         items = []
         wiersze = fa.findall(f'.//{{{self.ns}}}FaWiersz')
         for wiersz in wiersze:
-            items.append(
-                {
-                    "numer": self._get_text(wiersz, 'NrWierszaFa'),
-                    "nazwa": self._get_text(wiersz, 'P_7'),
-                    "ilosc": self._get_decimal(wiersz, 'P_8B'),
-                    "cena_netto": self._get_decimal(wiersz, 'P_9A'),
-                    "wartosc_netto": self._get_decimal(wiersz, 'P_11'),
-                    "stawka_vat": self._get_text(wiersz, 'P_12'),
-                }
-            )
+            wartosc_netto = self._get_decimal(wiersz, 'P_11')
+            stawka_vat_str = self._get_text(wiersz, 'P_12')
+
+            try:
+                stawka = float(stawka_vat_str) if stawka_vat_str and stawka_vat_str not in ['zw', 'np', 'oo'] else 0.0
+            except (ValueError, TypeError):
+                stawka = 0.0
+            kwota_vat = round(wartosc_netto * stawka / 100, 2)
+            wartosc_brutto = round(wartosc_netto + kwota_vat, 2)
+
+            items.append({
+                "numer": self._get_text(wiersz, 'NrWierszaFa'),
+                "nazwa": self._get_text(wiersz, 'P_7'),
+                "indeks": self._get_text(wiersz, 'Indeks'),
+                "kod_cn": self._get_text(wiersz, 'CN'),
+                "gtu": self._get_text(wiersz, 'GTU'),
+                "ilosc": self._get_decimal(wiersz, 'P_8B'),
+                "jednostka": self._get_text(wiersz, 'P_8A'),
+                "cena_netto": self._get_decimal(wiersz, 'P_9A'),
+                "rabat": self._get_decimal(wiersz, 'P_10'),
+                "wartosc_netto": wartosc_netto,
+                "stawka_vat": stawka_vat_str,
+                "kwota_vat": kwota_vat,
+                "wartosc_brutto": wartosc_brutto,
+            })
         return items
 
     def _get_text(

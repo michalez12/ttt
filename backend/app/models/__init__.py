@@ -1,7 +1,7 @@
 from .user import User
 from .kontrahent import Kontrahent
 from .rachunek import RachunekBankowy
-from .faktura import Faktura
+from .faktura import Faktura, PozycjaFaktury
 from .eksport import EksportBank, faktury_eksporty
 
 __all__ = [
@@ -9,6 +9,7 @@ __all__ = [
     "Kontrahent",
     "RachunekBankowy",
     "Faktura",
+    "PozycjaFaktury",
     "EksportBank",
     "faktury_eksporty",
 ]

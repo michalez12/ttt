@@ -12,6 +12,8 @@ from ..services.bank_generator import BankXMLGenerator
 
 router = APIRouter(prefix="/api/eksport", tags=["Eksport"])
 
+MPP_THRESHOLD = 15000.00  # próg podzielonej płatności
+
 
 @router.post("/generate")
 async def generate_bank_xml(
@@ -21,8 +23,8 @@ async def generate_bank_xml(
 ):
     """
     Generuje plik XML dla banku (pain.001.001.09) na podstawie wybranych faktur.
+    Faktury >= 15 000 PLN automatycznie generowane jako płatność podzielona (MPP).
     """
-
     faktury = db.query(Faktura).filter(Faktura.id.in_(faktura_ids)).all()
     if not faktury:
         raise HTTPException(status_code=404, detail="Nie znaleziono faktur")
@@ -30,7 +32,6 @@ async def generate_bank_xml(
     invalid_faktury: list[dict] = []
 
     for faktura in faktury:
-        # Normalizacja kodu formy płatności do stringa
         kod = (
             str(faktura.forma_platnosci).strip()
             if faktura.forma_platnosci is not None
@@ -53,7 +54,6 @@ async def generate_bank_xml(
                     "reason": "Brak rachunku bankowego",
                 }
             )
-        # brak sprawdzania status_biala_lista – dowolny rachunek przechodzi
 
     if invalid_faktury:
         raise HTTPException(
@@ -71,7 +71,6 @@ async def generate_bank_xml(
         "rachunek": current_user.firma_rachunek or "",
     }
 
-    # Walidacja danych firmy
     if not firma_data["rachunek"]:
         raise HTTPException(
             status_code=400,
@@ -85,20 +84,29 @@ async def generate_bank_xml(
     suma_kwot = 0.0
 
     for faktura in faktury:
+        kwota_brutto = float(faktura.kwota_brutto)
+        kwota_vat = float(faktura.kwota_vat) if faktura.kwota_vat is not None else 0.0
+        kontrahent_nip = faktura.kontrahent.nip if faktura.kontrahent else ""
+
+        # Automatyczne wykrycie MPP
+        is_mpp = kwota_brutto >= MPP_THRESHOLD
+
         faktury_data.append(
             {
                 "numer_ksef": faktura.numer_ksef,
                 "numer_faktury": faktura.numer_faktury,
                 "kontrahent_nazwa": faktura.kontrahent.nazwa,
-                "kontrahent_nip": faktura.kontrahent.nip,
+                "kontrahent_nip": kontrahent_nip,
                 "rachunek_iban": faktura.rachunek.iban,
                 "nazwa_banku": faktura.rachunek.nazwa_banku,
-                "kwota_brutto": float(faktura.kwota_brutto),
+                "kwota_brutto": kwota_brutto,
+                "kwota_vat": kwota_vat,
                 "waluta": faktura.waluta,
                 "termin_platnosci": faktura.termin_platnosci,
+                "is_mpp": is_mpp,
             }
         )
-        suma_kwot += float(faktura.kwota_brutto)
+        suma_kwot += kwota_brutto
 
     generator = BankXMLGenerator(firma_data)
     xml_content = generator.generate(faktury_data)
@@ -115,7 +123,6 @@ async def generate_bank_xml(
         plik_xml=xml_content,
         sciezka_pliku=None,
     )
-
     db.add(eksport_record)
     db.flush()
 
@@ -124,13 +131,22 @@ async def generate_bank_xml(
 
     db.commit()
 
+    # Policz ile faktur było MPP
+    mpp_count = sum(1 for f in faktury_data if f["is_mpp"])
+
     return {
         "success": True,
         "eksport_id": eksport_record.id,
         "nazwa_pliku": nazwa_pliku,
         "liczba_faktur": len(faktury),
         "suma_kwot": suma_kwot,
-        "message": "XML wygenerowany pomyślnie",
+        "mpp_count": mpp_count,
+        "message": (
+            f"XML wygenerowany pomyślnie. "
+            f"{mpp_count} faktur jako płatność podzielona (MPP >= 15 000 PLN)."
+            if mpp_count > 0
+            else "XML wygenerowany pomyślnie."
+        ),
     }
 
 
@@ -141,9 +157,6 @@ async def get_eksport_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Pobiera historię eksportów.
-    """
     query = db.query(EksportBank).order_by(EksportBank.data_eksportu.desc())
     total = query.count()
     eksporty = query.offset(skip).limit(limit).all()
@@ -156,9 +169,11 @@ async def get_eksport_history(
                 "nazwa_pliku": eksport_record.nazwa_pliku,
                 "data_eksportu": eksport_record.data_eksportu.isoformat(),
                 "liczba_faktur": eksport_record.liczba_faktur,
-                "suma_kwot": float(eksport_record.laczna_kwota)
-                if eksport_record.laczna_kwota
-                else 0.0,
+                "suma_kwot": (
+                    float(eksport_record.laczna_kwota)
+                    if eksport_record.laczna_kwota
+                    else 0.0
+                ),
                 "status": eksport_record.status,
             }
         )
@@ -177,20 +192,13 @@ async def download_eksport(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Pobiera plik XML eksportu.
-    """
     eksport_record = (
         db.query(EksportBank).filter(EksportBank.id == eksport_id).first()
     )
-
     if not eksport_record:
         raise HTTPException(status_code=404, detail="Eksport nie znaleziony")
-
     if not eksport_record.plik_xml:
-        raise HTTPException(
-            status_code=404, detail="Brak XML dla tego eksportu"
-        )
+        raise HTTPException(status_code=404, detail="Brak XML dla tego eksportu")
 
     return Response(
         content=eksport_record.plik_xml,
@@ -207,20 +215,13 @@ async def delete_eksport(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Usuwa eksport (soft delete – zmienia status).
-    """
     eksport_record = (
         db.query(EksportBank).filter(EksportBank.id == eksport_id).first()
     )
-
     if not eksport_record:
         raise HTTPException(status_code=404, detail="Eksport nie znaleziony")
 
     eksport_record.status = "ANULOWANY"
     db.commit()
 
-    return {
-        "success": True,
-        "message": "Eksport anulowany",
-    }
+    return {"success": True, "message": "Eksport anulowany"}

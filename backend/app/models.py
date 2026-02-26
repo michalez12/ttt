@@ -8,15 +8,15 @@ class EksportBank(Base):
     __tablename__ = "eksport_bank"
 
     id = Column(Integer, primary_key=True, index=True)
-    nazwa = Column(String(100), nullable=False, unique=True)   # np. "PEKAO_XML"
-    rachunek_iban = Column(String(34), nullable=False)         # PL3812403927...
+    nazwa = Column(String(100), nullable=False, unique=True)
+    rachunek_iban = Column(String(34), nullable=False)
     opis = Column(String(255))
     created_at = Column(DateTime, default=datetime.now)
 
 
 class User(Base):
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(100), unique=True, index=True, nullable=False)
     email = Column(String(100), unique=True, index=True, nullable=False)
@@ -25,18 +25,17 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.now)
-    
+
     # Pola firmowe
     firma_nazwa = Column(String(255), nullable=True)
     firma_nip = Column(String(20), nullable=True)
     firma_rachunek = Column(String(34), nullable=True)
-# Token KSeF  ← NOWE
-    ksef_token = Column(String(500), nullable=True)
+    ksef_token = Column(String(500), nullable=True)  # <-- POPRAWIONE WCIĘCIE
 
 
 class Kontrahent(Base):
     __tablename__ = "kontrahenci"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     nip = Column(String(20), unique=True, index=True, nullable=False)
     nazwa = Column(String(255), nullable=False)
@@ -44,7 +43,7 @@ class Kontrahent(Base):
     email = Column(String(100))
     telefon = Column(String(20))
     created_at = Column(DateTime, default=datetime.now)
-    
+
     # Relacje
     rachunki = relationship("RachunekBankowy", back_populates="kontrahent")
     faktury = relationship("Faktura", back_populates="kontrahent")
@@ -63,7 +62,7 @@ class RachunekBankowy(Base):
     data_weryfikacji = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
-    # NOWE POLE – wyjątek dla Białej Listy (np. rachunek faktora)
+    # Wyjątek dla Białej Listy (np. rachunek faktora)
     ignore_biala_lista = Column(Boolean, nullable=False, default=False)
 
     kontrahent = relationship("Kontrahent", back_populates="rachunki")
@@ -72,79 +71,88 @@ class RachunekBankowy(Base):
 
 class Faktura(Base):
     __tablename__ = "faktury"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     numer_ksef = Column(String(100), unique=True, index=True)
     numer_faktury = Column(String(100), nullable=False, index=True)
-    
+
     # Powiązania
     kontrahent_id = Column(Integer, ForeignKey("kontrahenci.id"), nullable=False)
     rachunek_id = Column(Integer, ForeignKey("rachunki_bankowe.id"))
-    
+
     # Daty
     data_wystawienia = Column(Date, nullable=False)
     termin_platnosci = Column(Date)
     data_pobrania = Column(DateTime, default=datetime.now)
-    
+
     # Kwoty
     kwota_netto = Column(Float, nullable=False)
     kwota_vat = Column(Float, nullable=False)
     kwota_brutto = Column(Float, nullable=False)
     waluta = Column(String(3), default="PLN")
-    
+
     # Płatność
-    forma_platnosci = Column(String(20))  # 1=gotówka, 2=karta, 6=przelew, itd.
+    forma_platnosci = Column(String(20))
     opis_platnosci = Column(Text)
-    
+
     # Status
-    status = Column(String(20), default="NOWA")  # NOWA, WERYFIKOWANA, ZATWIERDZONA, WYEKSPORTOWANA, ZAPLACONA
+    status = Column(String(20), default="NOWA")
     czy_do_eksportu = Column(Boolean, default=False)
-    kolor = Column(String(20))  # green, yellow, orange, red
-    
+    kolor = Column(String(20))
+
     # Obsługa korekt
-    rodzaj_faktury = Column(String(20), default="VAT")  # VAT, KOR, ZALICZKA
-    numer_fa_oryginalnej = Column(String(100), nullable=True)  # Dla korekty
+    rodzaj_faktury = Column(String(20), default="VAT")
+    numer_fa_oryginalnej = Column(String(100), nullable=True)
     czy_korekta = Column(Boolean, default=False)
     faktura_oryginalna_id = Column(Integer, ForeignKey('faktury.id'), nullable=True)
-    
+    czy_rozliczona = Column(Boolean, default=False)  # <-- POPRAWIONE WCIĘCIE
+
     # XML
     xml_ksef = Column(Text)
-    
+
     # Metadata
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-    
+
     # Relacje
     kontrahent = relationship("Kontrahent", back_populates="faktury")
     rachunek = relationship("RachunekBankowy", back_populates="faktury")
     pozycje = relationship("PozycjaFaktury", back_populates="faktura", cascade="all, delete-orphan")
-    
+
     # Relacja do faktury oryginalnej (dla korekt)
-    faktura_oryginalna = relationship("Faktura", remote_side=[id], backref="korekty", foreign_keys=[faktura_oryginalna_id])
+    faktura_oryginalna = relationship(
+        "Faktura",
+        remote_side=[id],
+        backref="korekty",
+        foreign_keys=[faktura_oryginalna_id]
+    )
 
 
 class PozycjaFaktury(Base):
     __tablename__ = "pozycje_faktury"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     faktura_id = Column(Integer, ForeignKey("faktury.id"), nullable=False)
     numer_pozycji = Column(Integer)
     nazwa = Column(String(500), nullable=False)
+    indeks = Column(String(100), nullable=True)
+    kod_cn = Column(String(50), nullable=True)
+    gtu = Column(String(20), nullable=True)
     ilosc = Column(Float)
-    jednostka = Column(String(20))
+    jednostka = Column(String(50))
     cena_netto = Column(Float)
+    rabat = Column(Float, nullable=True)
     wartosc_netto = Column(Float)
     stawka_vat = Column(String(10))
     kwota_vat = Column(Float)
     wartosc_brutto = Column(Float)
-    
+
     # Relacja
     faktura = relationship("Faktura", back_populates="pozycje")
 
-
 class Eksport(Base):
     __tablename__ = "eksporty"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     data_eksportu = Column(DateTime, default=datetime.now)
     nazwa_pliku = Column(String(255), nullable=False)
@@ -159,12 +167,11 @@ class Eksport(Base):
 
 class KsefSession(Base):
     __tablename__ = "ksef_sessions"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     session_token = Column(String(500), unique=True)
     nip = Column(String(20), nullable=False)
     data_utworzenia = Column(DateTime, default=datetime.now)
     data_wygasniecia = Column(DateTime)
     is_active = Column(Boolean, default=True)
-    
     created_at = Column(DateTime, default=datetime.now)

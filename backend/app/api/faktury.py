@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func, case, and_
 from typing import Optional
 from datetime import datetime
 
@@ -19,7 +20,6 @@ def import_invoice_xml_bytes(xml_content: bytes, db: Session) -> Faktura:
     parser = KsefInvoiceParser(xml_content.decode("utf-8"))
     fakt_data = parser.parse()
 
-    # Kontrahent (sprzedawca z faktury)
     seller = fakt_data["seller"]
     kontrahent = (
         db.query(Kontrahent)
@@ -37,7 +37,6 @@ def import_invoice_xml_bytes(xml_content: bytes, db: Session) -> Faktura:
         db.add(kontrahent)
         db.flush()
 
-    # Rachunek bankowy
     rachunek = None
     rachunek_id = None
     if fakt_data["payment"]["rachunek"]:
@@ -61,12 +60,10 @@ def import_invoice_xml_bytes(xml_content: bytes, db: Session) -> Faktura:
             db.flush()
         rachunek_id = rachunek.id
 
-    # Sprawdź czy to korekta
     rodzaj_faktury = fakt_data["basic_info"].get("rodzaj_faktury", "VAT")
     czy_korekta = rodzaj_faktury in ["KOR", "KOREKTA"]
     numer_fa_org = fakt_data["basic_info"].get("numer_fa_oryginalnej")
 
-    # Szukaj faktury oryginalnej dla korekty
     faktura_oryginalna_id = None
     if czy_korekta and numer_fa_org:
         faktura_org = (
@@ -80,7 +77,6 @@ def import_invoice_xml_bytes(xml_content: bytes, db: Session) -> Faktura:
         if faktura_org:
             faktura_oryginalna_id = faktura_org.id
 
-    # BLOKADA DUPLIKATÓW po kontrahencie + numerze faktury
     existing = (
         db.query(Faktura)
         .filter(
@@ -92,10 +88,8 @@ def import_invoice_xml_bytes(xml_content: bytes, db: Session) -> Faktura:
     if existing:
         return existing
 
-    # numer KSeF (jeśli jest w danych)
     numer_ksef = fakt_data.get("numer_ksef")
     if numer_ksef:
-        # jeśli już istnieje faktura z tym numerem KSeF, zwróć ją
         existing_ksef = (
             db.query(Faktura)
             .filter(Faktura.numer_ksef == numer_ksef)
@@ -104,16 +98,13 @@ def import_invoice_xml_bytes(xml_content: bytes, db: Session) -> Faktura:
         if existing_ksef:
             return existing_ksef
     else:
-        # brak numeru KSeF w danych – nie generujemy już MANUAL-..., zostawiamy None
         numer_ksef = None
 
-    # Klasyfikacja płatności / korekty
     forma_platnosci_id = fakt_data["payment"]["forma"]
-
     if czy_korekta:
         classification = PaymentClassifier.classify_korekta(
             fakt_data["amounts"]["brutto"],
-            False,  # TODO: logika opóźnienia
+            False,
         )
         czy_do_eksportu = (
             classification["export"]
@@ -121,9 +112,7 @@ def import_invoice_xml_bytes(xml_content: bytes, db: Session) -> Faktura:
             and rachunek_id is not None
         )
     else:
-        classification = PaymentClassifier.classify(
-            forma_platnosci_id, False
-        )
+        classification = PaymentClassifier.classify(forma_platnosci_id, False)
         czy_do_eksportu = (
             forma_platnosci_id == 6
             and fakt_data["payment"].get("termin_platnosci") is not None
@@ -147,16 +136,36 @@ def import_invoice_xml_bytes(xml_content: bytes, db: Session) -> Faktura:
         czy_do_eksportu=czy_do_eksportu,
         kolor=classification["color"],
         xml_ksef=xml_content.decode("utf-8"),
-        # UWAGA: rodzaj_faktury NIE jest przekazywany do modelu
         numer_fa_oryginalnej=numer_fa_org,
         czy_korekta=czy_korekta,
         faktura_oryginalna_id=faktura_oryginalna_id,
     )
-
     db.add(faktura)
     db.flush()
-    db.refresh(faktura)
 
+    # Zapisz pozycje faktury
+    from ..models import PozycjaFaktury
+    for idx, item in enumerate(fakt_data.get("items", []), start=1):
+        pozycja = PozycjaFaktury(
+    faktura_id=faktura.id,
+    numer_pozycji=item.get("numer") or idx,
+    nazwa=item.get("nazwa") or "—",
+    indeks=item.get("indeks"),
+    kod_cn=item.get("kod_cn"),
+    gtu=item.get("gtu"),
+    ilosc=item.get("ilosc"),
+    jednostka=item.get("jednostka"),
+    cena_netto=item.get("cena_netto"),
+    rabat=item.get("rabat"),
+    wartosc_netto=item.get("wartosc_netto"),
+    stawka_vat=item.get("stawka_vat"),
+    kwota_vat=item.get("kwota_vat"),
+    wartosc_brutto=item.get("wartosc_brutto"),
+)
+        db.add(pozycja)
+
+    db.flush()
+    db.refresh(faktura)
     return faktura
 
 
@@ -174,7 +183,6 @@ async def get_faktury(
         joinedload(Faktura.kontrahent),
         joinedload(Faktura.rachunek)
     )
-
     if kolor:
         query = query.filter(Faktura.kolor == kolor)
     if status:
@@ -199,6 +207,11 @@ async def get_faktury(
             "status": f.status,
             "kolor": f.kolor,
             "czy_do_eksportu": f.czy_do_eksportu,
+            # NOWE pola korekt
+            "czy_korekta": getattr(f, "czy_korekta", False),
+            "czy_rozliczona": getattr(f, "czy_rozliczona", False),
+            "faktura_oryginalna_id": getattr(f, "faktura_oryginalna_id", None),
+            "numer_fa_oryginalnej": getattr(f, "numer_fa_oryginalnej", None),
             "kontrahent": {
                 "id": f.kontrahent.id,
                 "nazwa": f.kontrahent.nazwa,
@@ -220,6 +233,56 @@ async def get_faktury(
     }
 
 
+@router.get("/kontrahenci/summary")
+async def get_kontrahenci_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Zestawienie kontrahentów: kwoty faktur, korekt, saldo"""
+    rows = (
+        db.query(
+            Kontrahent.id.label("kontrahent_id"),
+            Kontrahent.nazwa,
+            Kontrahent.nip,
+            func.sum(
+                case(
+                    (and_(Faktura.czy_korekta == False, Faktura.status != "ZAPLACONA"), Faktura.kwota_brutto),
+                    else_=0,
+                )
+            ).label("suma_faktur"),
+            func.sum(
+                case(
+                    (Faktura.czy_korekta == True, Faktura.kwota_brutto),
+                    else_=0,
+                )
+            ).label("suma_korekt"),
+            func.sum(
+                case(
+                    (and_(Faktura.czy_korekta == True, Faktura.czy_rozliczona == False), Faktura.kwota_brutto),
+                    else_=0,
+                )
+            ).label("korekty_nierozliczone"),
+            func.sum(Faktura.kwota_brutto).label("saldo"),
+        )
+        .join(Faktura, Faktura.kontrahent_id == Kontrahent.id)
+        .group_by(Kontrahent.id, Kontrahent.nazwa, Kontrahent.nip)
+        .all()
+    )
+
+    return [
+        {
+            "kontrahent_id": r.kontrahent_id,
+            "nazwa": r.nazwa,
+            "nip": r.nip,
+            "suma_faktur": float(r.suma_faktur or 0),
+            "suma_korekt": float(r.suma_korekt or 0),
+            "korekty_nierozliczone": float(r.korekty_nierozliczone or 0),
+            "saldo": float(r.saldo or 0),
+        }
+        for r in rows
+    ]
+
+
 @router.get("/{faktura_id}")
 async def get_faktura(
     faktura_id: int,
@@ -229,7 +292,8 @@ async def get_faktura(
     """Pobierz szczegóły faktury"""
     faktura = db.query(Faktura).options(
         joinedload(Faktura.kontrahent),
-        joinedload(Faktura.rachunek)
+        joinedload(Faktura.rachunek),
+	joinedload(Faktura.pozycje),
     ).filter(Faktura.id == faktura_id).first()
 
     if not faktura:
@@ -251,7 +315,11 @@ async def get_faktura(
         "kolor": faktura.kolor,
         "czy_do_eksportu": faktura.czy_do_eksportu,
         "rodzaj_faktury": getattr(faktura, "rodzaj_faktury", None),
+        # NOWE pola korekt
         "czy_korekta": getattr(faktura, "czy_korekta", False),
+        "czy_rozliczona": getattr(faktura, "czy_rozliczona", False),
+        "faktura_oryginalna_id": getattr(faktura, "faktura_oryginalna_id", None),
+        "numer_fa_oryginalnej": getattr(faktura, "numer_fa_oryginalnej", None),
         "kontrahent": {
             "id": faktura.kontrahent.id,
             "nazwa": faktura.kontrahent.nazwa,
@@ -264,6 +332,26 @@ async def get_faktura(
             "nazwa_banku": faktura.rachunek.nazwa_banku,
             "status_biala_lista": faktura.rachunek.status_biala_lista,
         } if faktura.rachunek else None,
+        # pozycje faktury
+        "pozycje": [
+    {
+        "id": p.id,
+        "numer_pozycji": getattr(p, "numer_pozycji", None),
+        "nazwa": p.nazwa,
+        "indeks": getattr(p, "indeks", None),
+        "kod_cn": getattr(p, "kod_cn", None),
+        "gtu": getattr(p, "gtu", None),
+        "ilosc": getattr(p, "ilosc", None),
+        "jednostka": getattr(p, "jednostka", None),
+        "cena_netto": float(getattr(p, "cena_netto", 0) or 0),
+        "rabat": float(getattr(p, "rabat", 0) or 0) if getattr(p, "rabat", None) is not None else None,
+        "wartosc_netto": float(getattr(p, "wartosc_netto", 0) or 0),
+        "stawka_vat": getattr(p, "stawka_vat", None),
+        "kwota_vat": float(getattr(p, "kwota_vat", 0) or 0),
+        "wartosc_brutto": float(getattr(p, "wartosc_brutto", 0) or 0),
+    }
+    for p in getattr(faktura, "pozycje", []) or []
+],
     }
 
 
@@ -275,14 +363,11 @@ async def upload_faktura_xml(
 ):
     """Upload faktury XML z KSeF"""
     xml_content = await file.read()
-
     try:
         faktura = import_invoice_xml_bytes(xml_content, db)
         kontrahent = faktura.kontrahent
-
         db.commit()
         db.refresh(faktura)
-
         return {
             "success": True,
             "faktura_id": faktura.id,
@@ -300,9 +385,7 @@ async def upload_faktura_xml(
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(
-            status_code=400, detail=f"Błąd importu: {str(e)}"
-        )
+        raise HTTPException(status_code=400, detail=f"Błąd importu: {str(e)}")
 
 
 @router.post("/{faktura_id}/verify")
@@ -317,18 +400,10 @@ async def verify_faktura(
     faktura = db.query(Faktura).filter(Faktura.id == faktura_id).first()
     if not faktura:
         raise HTTPException(status_code=404, detail="Faktura nie znaleziona")
-
     if not faktura.rachunek:
-        raise HTTPException(
-            status_code=400,
-            detail="Faktura nie ma przypisanego rachunku",
-        )
-
+        raise HTTPException(status_code=400, detail="Faktura nie ma przypisanego rachunku")
     if not faktura.kontrahent or not faktura.kontrahent.nip:
-        raise HTTPException(
-            status_code=400,
-            detail="Brak kontrahenta lub NIP dla faktury",
-        )
+        raise HTTPException(status_code=400, detail="Brak kontrahenta lub NIP dla faktury")
 
     try:
         biala_lista = BialaListaVerifier()
@@ -342,20 +417,13 @@ async def verify_faktura(
                 "success": False,
                 "verified": False,
                 "status_biala_lista": faktura.rachunek.status_biala_lista,
-                "message": result.get(
-                    "error",
-                    "Kontrahent/rachunek nie znaleziony w rejestrze",
-                ),
+                "message": result.get("error", "Kontrahent/rachunek nie znaleziony w rejestrze"),
             }
 
         api_accounts = set(result.get("rachunki", []))
         is_on_white_list = faktura.rachunek.iban in api_accounts
-
-        faktura.rachunek.status_biala_lista = (
-            "ZWERYFIKOWANY" if is_on_white_list else "NIE_ZWERYFIKOWANY"
-        )
+        faktura.rachunek.status_biala_lista = "ZWERYFIKOWANY" if is_on_white_list else "NIE_ZWERYFIKOWANY"
         faktura.rachunek.data_weryfikacji = datetime.now()
-
         db.commit()
 
         return {
@@ -364,14 +432,10 @@ async def verify_faktura(
             "status_biala_lista": faktura.rachunek.status_biala_lista,
             "iban": faktura.rachunek.iban,
             "nip": faktura.kontrahent.nip,
-            "message": "Rachunek jest na Białej Liście"
-            if is_on_white_list
-            else "Rachunek nie znajduje się na Białej Liście dla tego NIP",
+            "message": "Rachunek jest na Białej Liście" if is_on_white_list else "Rachunek nie znajduje się na Białej Liście dla tego NIP",
         }
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Błąd weryfikacji: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Błąd weryfikacji: {str(e)}")
 
 
 @router.patch("/{faktura_id}/status")
@@ -385,10 +449,8 @@ async def update_faktura_status(
     faktura = db.query(Faktura).filter(Faktura.id == faktura_id).first()
     if not faktura:
         raise HTTPException(status_code=404, detail="Faktura nie znaleziona")
-
     faktura.status = status
     db.commit()
-
     return {"success": True, "message": "Status zaktualizowany"}
 
 
@@ -403,16 +465,38 @@ async def update_export_flag(
     faktura = db.query(Faktura).filter(Faktura.id == faktura_id).first()
     if not faktura:
         raise HTTPException(status_code=404, detail="Faktura nie znaleziona")
-
     faktura.czy_do_eksportu = do_eksportu
     db.commit()
     db.refresh(faktura)
-
     return {
         "success": True,
         "faktura_id": faktura.id,
         "numer_faktury": faktura.numer_faktury,
         "czy_do_eksportu": faktura.czy_do_eksportu,
+    }
+
+
+@router.patch("/{faktura_id}/rozlicz")
+async def rozlicz_korekta(
+    faktura_id: int,
+    rozliczona: bool = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Oznacz korektę jako rozliczoną / nierozliczoną"""
+    faktura = db.query(Faktura).filter(Faktura.id == faktura_id).first()
+    if not faktura:
+        raise HTTPException(status_code=404, detail="Faktura nie znaleziona")
+    if not getattr(faktura, "czy_korekta", False):
+        raise HTTPException(status_code=400, detail="To nie jest korekta")
+    faktura.czy_rozliczona = rozliczona
+    db.commit()
+    db.refresh(faktura)
+    return {
+        "success": True,
+        "faktura_id": faktura.id,
+        "numer_faktury": faktura.numer_faktury,
+        "czy_rozliczona": faktura.czy_rozliczona,
     }
 
 
@@ -444,8 +528,9 @@ async def get_korekty(
                 "id": k.id,
                 "numer": k.numer_faktury,
                 "kwota": float(k.kwota_brutto),
-                "data": k.data_wystawienia.isoformat(),
+                "data": k.data_wystawienia.isoformat() if k.data_wystawienia else None,
                 "kolor": k.kolor,
+                "czy_rozliczona": getattr(k, "czy_rozliczona", False),
             }
             for k in korekty
         ],

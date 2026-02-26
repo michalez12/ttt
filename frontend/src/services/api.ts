@@ -19,6 +19,7 @@ export interface Kontrahent {
   id: number;
   nazwa: string;
   nip: string;
+  adres?: string;
 }
 
 export interface RachunekBankowy {
@@ -26,6 +27,32 @@ export interface RachunekBankowy {
   iban: string;
   nazwa_banku: string | null;
   status_biala_lista: string | null;
+}
+
+export interface PozycjaFaktury {
+  id: number;
+  numer_pozycji?: number;
+  nazwa: string;
+  indeks?: string | null;
+  kod_cn?: string | null;
+  gtu?: string | null;
+  ilosc?: number;
+  jednostka?: string | null;
+  cena_netto?: number;
+  rabat?: number | null;
+  wartosc_netto?: number;
+  stawka_vat?: string;
+  kwota_vat?: number;
+  wartosc_brutto?: number;
+}
+
+export interface KorektyInfo {
+  id: number;
+  numer: string;
+  kwota: number;
+  data: string;
+  kolor: string | null;
+  czy_rozliczona: boolean;
 }
 
 export interface Faktura {
@@ -39,11 +66,17 @@ export interface Faktura {
   kwota_brutto: number;
   waluta: string;
   status: string;
-  forma_platnosci: number;
+  forma_platnosci: string | null;
+  opis_platnosci?: string;
   czy_do_eksportu: boolean;
   kolor: string | null;
+  czy_korekta?: boolean;
+  czy_rozliczona?: boolean;
+  faktura_oryginalna_id?: number | null;
+  numer_fa_oryginalnej?: string | null;
   kontrahent: Kontrahent | null;
   rachunek: RachunekBankowy | null;
+  pozycje?: PozycjaFaktury[];
 }
 
 export interface FakturyListResponse {
@@ -51,12 +84,19 @@ export interface FakturyListResponse {
   total: number;
 }
 
+export interface KontrahentSummary {
+  kontrahent_id: number;
+  nazwa: string;
+  nip: string;
+  suma_faktur: number;
+  suma_korekt: number;
+  korekty_nierozliczone: number;
+  saldo: number;
+}
+
 export const ksefApi = {
-  // Autoryzacja
-  login: async (apiToken: string) => {
-    const response = await api.post("/api/auth/login", {
-      api_token: apiToken,
-    });
+  login: async (username: string, password: string) => {
+    const response = await api.post("/api/auth/login", { username, password });
     return response.data;
   },
 
@@ -70,7 +110,6 @@ export const ksefApi = {
     return response.data;
   },
 
-  // Synchronizacja z KSeF
   syncInvoices: async (
     dateFrom?: string,
     dateTo?: string
@@ -83,14 +122,32 @@ export const ksefApi = {
     const params = new URLSearchParams();
     if (dateFrom) params.append("date_from", dateFrom);
     if (dateTo) params.append("date_to", dateTo);
-
     const response = await api.post(`/api/ksef/sync?${params.toString()}`);
     return response.data;
   },
 
-  // Faktury
   getFaktury: async (): Promise<FakturyListResponse> => {
     const response = await api.get("/api/faktury");
+    return response.data;
+  },
+
+changePassword: async (current_password: string, new_password: string) => {
+  const response = await api.post("/api/auth/change-password", {
+    current_password,
+    new_password,
+  });
+  return response.data;
+},
+
+
+
+  getFaktura: async (id: number): Promise<Faktura> => {
+    const response = await api.get(`/api/faktury/${id}`);
+    return response.data;
+  },
+
+  getKorektyFaktury: async (id: number) => {
+    const response = await api.get(`/api/faktury/${id}/korekty`);
     return response.data;
   },
 
@@ -106,7 +163,13 @@ export const ksefApi = {
     return response.data;
   },
 
-  // Eksport
+  rozliczKorekta: async (id: number, rozliczona: boolean) => {
+    const response = await api.patch(`/api/faktury/${id}/rozlicz`, null, {
+      params: { rozliczona },
+    });
+    return response.data;
+  },
+
   generateExport: async (ids: number[]) => {
     const response = await api.post("/api/eksport/generate", ids);
     return response.data;
@@ -126,7 +189,11 @@ export const ksefApi = {
     return response.data;
   },
 
-  // Kontrahenci
+  deleteExport: async (id: number) => {
+    const response = await api.delete(`/api/eksport/eksport/${id}`);
+    return response.data;
+  },
+
   getKontrahenci: async (search?: string) => {
     const response = await api.get("/api/kontrahenci", {
       params: { search },
@@ -134,9 +201,13 @@ export const ksefApi = {
     return response.data;
   },
 
-  // Profil firmy
+  getKontrahenciSummary: async (): Promise<KontrahentSummary[]> => {
+    const response = await api.get("/api/faktury/kontrahenci/summary");
+    return response.data;
+  },
+
   getProfileFirma: async () => {
-    const response = await api.get("/api/profile/firma");
+    const response = await api.get("/api/profile/me");
     return response.data;
   },
 

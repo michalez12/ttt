@@ -7,6 +7,7 @@ import bcrypt
 
 from ..database import get_db
 from ..models import User
+from .deps import get_current_user
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
 
@@ -32,6 +33,11 @@ class RegisterRequest(BaseModel):
     firma_nip: Optional[str] = None
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(
         plain_password.encode('utf-8'),
@@ -54,9 +60,6 @@ async def login(
     credentials: LoginRequest,
     db: Session = Depends(get_db),
 ):
-    """
-    Logowanie - weryfikuje hasło bcrypt, zwraca API token.
-    """
     user = (
         db.query(User)
         .filter(User.username == credentials.username)
@@ -79,15 +82,30 @@ async def login(
     )
 
 
+@router.get("/me")
+async def me(
+    current_user: User = Depends(get_current_user),
+):
+    return {
+        "username": current_user.username,
+        "email": current_user.email,
+        "firma_nazwa": current_user.firma_nazwa,
+        "firma_nip": current_user.firma_nip,
+    }
+
+
+@router.post("/logout")
+async def logout(
+    current_user: User = Depends(get_current_user),
+):
+    return {"success": True, "message": "Wylogowano"}
+
+
 @router.post("/register")
 async def register(
     data: RegisterRequest,
     db: Session = Depends(get_db),
 ):
-    """
-    Rejestracja nowego użytkownika.
-    """
-    # Sprawdź czy username lub email już istnieje
     existing = (
         db.query(User)
         .filter(
@@ -125,12 +143,29 @@ async def register(
     }
 
 
+@router.post("/change-password")
+async def change_password(
+    data: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not verify_password(data.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Nieprawidłowe obecne hasło")
+
+    if len(data.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Nowe hasło musi mieć co najmniej 6 znaków")
+
+    if data.new_password == data.current_password:
+        raise HTTPException(status_code=400, detail="Nowe hasło musi być inne niż obecne")
+
+    current_user.hashed_password = get_password_hash(data.new_password)
+    db.commit()
+
+    return {"message": "Hasło zostało zmienione"}
+
+
 @router.post("/hash-password")
 async def hash_password_endpoint(password: str):
-    """
-    Pomocniczy endpoint do generowania hasha hasła.
-    Użyj do stworzenia pierwszego użytkownika.
-    """
     return {"hashed_password": get_password_hash(password)}
 
 
@@ -138,10 +173,6 @@ async def hash_password_endpoint(password: str):
 async def create_first_user(
     db: Session = Depends(get_db),
 ):
-    """
-    Tworzy pierwszego użytkownika admin/admin123 jeśli baza jest pusta.
-    USUŃ ten endpoint na produkcji!
-    """
     count = db.query(User).count()
     if count > 0:
         raise HTTPException(
