@@ -77,6 +77,7 @@ export interface Faktura {
   kontrahent: Kontrahent | null;
   rachunek: RachunekBankowy | null;
   pozycje?: PozycjaFaktury[];
+  mpp_enabled: boolean; // NOWE POLE
 }
 
 export interface FakturyListResponse {
@@ -122,6 +123,7 @@ export const ksefApi = {
     const params = new URLSearchParams();
     if (dateFrom) params.append("date_from", dateFrom);
     if (dateTo) params.append("date_to", dateTo);
+
     const response = await api.post(`/api/ksef/sync?${params.toString()}`);
     return response.data;
   },
@@ -131,15 +133,13 @@ export const ksefApi = {
     return response.data;
   },
 
-changePassword: async (current_password: string, new_password: string) => {
-  const response = await api.post("/api/auth/change-password", {
-    current_password,
-    new_password,
-  });
-  return response.data;
-},
-
-
+  changePassword: async (current_password: string, new_password: string) => {
+    const response = await api.post("/api/auth/change-password", {
+      current_password,
+      new_password,
+    });
+    return response.data;
+  },
 
   getFaktura: async (id: number): Promise<Faktura> => {
     const response = await api.get(`/api/faktury/${id}`);
@@ -218,6 +218,22 @@ changePassword: async (current_password: string, new_password: string) => {
     ksef_token: string | null;
   }) => {
     const response = await api.put("/api/profile/firma", payload);
+    return response.data;
+  },
+
+  // NOWE METODY MPP – zgodne z backend/app/api/eksport.py
+  setMppFlag: async (fakturaId: number, enabled: boolean) => {
+    const response = await api.patch(`/api/eksport/mpp/${fakturaId}`, null, {
+      params: { enabled },
+    });
+    return response.data;
+  },
+
+  setMppBulk: async (ids: number[], enabled: boolean) => {
+    const response = await api.post("/api/eksport/mpp-bulk", {
+      ids,
+      enabled,
+    });
     return response.data;
   },
 };

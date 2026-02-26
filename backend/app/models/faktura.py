@@ -53,6 +53,10 @@ class Faktura(Base):
     kontrahent = relationship("Kontrahent", back_populates="faktury")
     rachunek = relationship("RachunekBankowy", back_populates="faktury")
 
+
+    mpp_enabled = Column(Boolean, nullable=False, server_default="false")
+
+
     # pozycje faktury
     pozycje = relationship(
         "PozycjaFaktury",
