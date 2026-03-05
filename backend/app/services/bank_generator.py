@@ -71,12 +71,10 @@ class BankXMLGenerator:
         etree.SubElement(pmt_inf, "NbOfTxs").text = str(len(faktury))
         etree.SubElement(pmt_inf, "CtrlSum").text = f"{ctrl_sum:.2f}"
 
-        # Typ płatności – zwykły przelew
         pmt_tp_inf = etree.SubElement(pmt_inf, "PmtTpInf")
         svc_lvl = etree.SubElement(pmt_tp_inf, "SvcLvl")
         etree.SubElement(svc_lvl, "Cd").text = "TRF"
 
-        # Data wykonania – najwcześniejszy termin płatności lub dziś
         dates = [
             f["termin_platnosci"]
             for f in faktury
@@ -86,23 +84,19 @@ class BankXMLGenerator:
         reqd_exctn_dt = etree.SubElement(pmt_inf, "ReqdExctnDt")
         etree.SubElement(reqd_exctn_dt, "Dt").text = req_date.strftime("%Y-%m-%d")
 
-        # Debtor
         dbtr = etree.SubElement(pmt_inf, "Dbtr")
         etree.SubElement(dbtr, "Nm").text = self.firma.get("nazwa") or ""
 
-        # Debtor Account
         dbtr_acct = etree.SubElement(pmt_inf, "DbtrAcct")
         dbtr_id = etree.SubElement(dbtr_acct, "Id")
         etree.SubElement(dbtr_id, "IBAN").text = self.firma["rachunek"]
 
-        # Debtor Agent
         dbtr_agt = etree.SubElement(pmt_inf, "DbtrAgt")
         fin_instn_id = etree.SubElement(dbtr_agt, "FinInstnId")
         bic = self.firma.get("bic")
         if bic:
             etree.SubElement(fin_instn_id, "BIC").text = bic
 
-        # Każda faktura = jeden CdtTrfTxInf
         for idx, faktura in enumerate(faktury, 1):
             self._create_credit_transfer(pmt_inf, faktura, idx)
 
@@ -115,7 +109,6 @@ class BankXMLGenerator:
 
         cdt_trf = etree.SubElement(parent, "CdtTrfTxInf")
 
-        # Payment ID
         pmt_id = etree.SubElement(cdt_trf, "PmtId")
         etree.SubElement(pmt_id, "InstrId").text = f"TXN{idx:04d}"
         end_to_end = (faktura.get("numer_faktury") or "").strip()
@@ -123,52 +116,53 @@ class BankXMLGenerator:
             end_to_end = end_to_end[:16]
         etree.SubElement(pmt_id, "EndToEndId").text = end_to_end
 
-        # Dla MPP: dodaj CtgyPurp = VATX na poziomie CdtTrfTxInf
-        # zgodnie ze specyfikacją Pekao sekcja 4.5
         if is_mpp:
             pmt_tp_inf = etree.SubElement(cdt_trf, "PmtTpInf")
             ctgy_purp = etree.SubElement(pmt_tp_inf, "CtgyPurp")
             etree.SubElement(ctgy_purp, "Cd").text = "VATX"
 
-        # Amount
         amt = etree.SubElement(cdt_trf, "Amt")
         waluta = faktura.get("waluta") or "PLN"
         instd_amt = etree.SubElement(amt, "InstdAmt", Ccy=waluta)
         instd_amt.text = f"{Decimal(str(faktura['kwota_brutto'])):.2f}"
 
-        # Creditor (kontrahent)
         cdtr = etree.SubElement(cdt_trf, "Cdtr")
         etree.SubElement(cdtr, "Nm").text = faktura["kontrahent_nazwa"]
 
-        # Creditor Account
         cdtr_acct = etree.SubElement(cdt_trf, "CdtrAcct")
         cdtr_id = etree.SubElement(cdtr_acct, "Id")
         etree.SubElement(cdtr_id, "IBAN").text = faktura["rachunek_iban"]
 
-        # Remittance – tytuł przelewu
         rmt_inf = etree.SubElement(cdt_trf, "RmtInf")
 
         if is_mpp:
-            # Format MPP wg specyfikacji Pekao sekcja 4.5:
-            # /VAT/kwota_VAT/IDC/nip_kontrahenta/INV/numer_faktury/TXT/opis
-            kwota_vat = Decimal(str(faktura.get("kwota_vat", 0)))
+            kwota_vat = abs(Decimal(str(faktura.get("kwota_vat", 0))))
             nip = (faktura.get("kontrahent_nip") or "").replace(" ", "")
-            numer = (faktura.get("numer_faktury") or "").strip()
+
+            # INV: max 35 znaków
+            numer = (faktura.get("numer_faktury") or "").strip()[:35]
+
+            # TXT: tylko dozwolone znaki wg spec. Pekao, max 33 znaki
+            opis_raw = (faktura.get("opis_kompensaty") or "Platnosc podzielona").strip()
+            dozwolone = set(
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                "0123456789 -.,:"
+            )
+            opis = "".join(c for c in opis_raw if c in dozwolone)[:33]
 
             tytul = (
                 f"/VAT/{kwota_vat:.2f}"
                 f"/IDC/{nip}"
                 f"/INV/{numer}"
-                f"/TXT/Platnosc podzielona"
+                f"/TXT/{opis}"
             )
 
-            # Maksymalnie 140 znaków wg specyfikacji
+            # max 140 znaków całego pola Ustrd
             if len(tytul) > 140:
                 tytul = tytul[:140]
 
             etree.SubElement(rmt_inf, "Ustrd").text = tytul
         else:
-            # Zwykły przelew – standardowy tytuł
             etree.SubElement(rmt_inf, "Ustrd").text = (
                 f"Faktura {faktura['numer_faktury']}"
             )

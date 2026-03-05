@@ -17,6 +17,7 @@ export default function FakturyList() {
   const [sortMonth, setSortMonth] = useState("");
   const [sortDirection, setSortDirection] = useState("desc");
   const [onlyTransfer, setOnlyTransfer] = useState(false);
+  const [sortField, setSortField] = useState<"data_wystawienia" | "termin_platnosci" | "kwota_brutto" | "status">("data_wystawienia");
 
   // przełącznik MPP przy eksporcie
   const [exportWithMPP, setExportWithMPP] = useState(false);
@@ -227,6 +228,9 @@ export default function FakturyList() {
   };
 
   const filteredFaktury = faktury.filter((f) => {
+    if (filterStatus === "NIEROZLICZONA") {
+      return !!f.czy_korekta && !f.czy_rozliczona;
+    }
     if (filterStatus && f.status !== filterStatus) return false;
     if (filterSearch) {
       const s = filterSearch.toLowerCase();
@@ -253,16 +257,40 @@ export default function FakturyList() {
     return true;
   });
 
-  const sortedFaktury = [...filteredFaktury].sort((a, b) => {
+   const sortedFaktury = [...filteredFaktury].sort((a, b) => {
     if (sortDirection === "none") return 0;
-    const da = a.data_wystawienia ? new Date(a.data_wystawienia) : null;
-    const db = b.data_wystawienia ? new Date(b.data_wystawienia) : null;
-    if (!da && !db) return 0;
-    if (!da) return 1;
-    if (!db) return -1;
-    return sortDirection === "asc"
-      ? da.getTime() - db.getTime()
-      : db.getTime() - da.getTime();
+
+    if (sortField === "data_wystawienia") {
+      const da = a.data_wystawienia ? new Date(a.data_wystawienia) : null;
+      const db = b.data_wystawienia ? new Date(b.data_wystawienia) : null;
+      if (!da && !db) return 0;
+      if (!da) return 1;
+      if (!db) return -1;
+      return sortDirection === "asc" ? da.getTime() - db.getTime() : db.getTime() - da.getTime();
+    }
+
+    if (sortField === "termin_platnosci") {
+      const da = a.termin_platnosci ? new Date(a.termin_platnosci) : null;
+      const db = b.termin_platnosci ? new Date(b.termin_platnosci) : null;
+      if (!da && !db) return 0;
+      if (!da) return 1;
+      if (!db) return -1;
+      return sortDirection === "asc" ? da.getTime() - db.getTime() : db.getTime() - da.getTime();
+    }
+
+    if (sortField === "kwota_brutto") {
+      const ka = Number(a.kwota_brutto) || 0;
+      const kb = Number(b.kwota_brutto) || 0;
+      return sortDirection === "asc" ? ka - kb : kb - ka;
+    }
+
+    if (sortField === "status") {
+      const sa = a.status || "";
+      const sb = b.status || "";
+      return sortDirection === "asc" ? sa.localeCompare(sb) : sb.localeCompare(sa);
+    }
+
+    return 0;
   });
 
   const visibleEksportowalne = sortedFaktury.filter(
@@ -291,7 +319,7 @@ export default function FakturyList() {
             onChange={(e) => setFilterSearch(e.target.value)}
             className="border rounded px-3 py-1.5 text-sm w-56"
           />
-          <select
+           <select
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value)}
             className="border rounded px-3 py-1.5 text-sm"
@@ -300,6 +328,7 @@ export default function FakturyList() {
             <option value="NOWA">NOWA</option>
             <option value="WYEKSPORTOWANA">WYEKSPORTOWANA</option>
             <option value="ZAPLACONA">ZAPLACONA</option>
+            <option value="NIEROZLICZONA">Nierozliczone korekty</option>
           </select>
           <select
             value={sortYear}
@@ -391,36 +420,80 @@ export default function FakturyList() {
               <th className="px-4 py-3 text-left font-medium text-gray-600">
                 Kontrahent
               </th>
-              <th className="px-4 py-3 text-left font-medium text-gray-600">
+                <th className="px-4 py-3 text-left font-medium text-gray-600">
                 <button
-                  onClick={() =>
-                    setSortDirection((prev) =>
-                      prev === "desc" ? "asc" : prev === "asc" ? "none" : "desc"
-                    )
-                  }
+                  onClick={() => {
+                    if (sortField === "data_wystawienia") {
+                      setSortDirection((prev) => prev === "desc" ? "asc" : prev === "asc" ? "none" : "desc");
+                    } else {
+                      setSortField("data_wystawienia");
+                      setSortDirection("desc");
+                    }
+                  }}
                   className="inline-flex items-center gap-1"
                 >
                   Data wystawienia
                   <span className="text-xs text-gray-400">
-                    {sortDirection === "desc"
-                      ? "↓"
-                      : sortDirection === "asc"
-                      ? "↑"
-                      : "-"}
+                    {sortField === "data_wystawienia" ? (sortDirection === "desc" ? "↓" : sortDirection === "asc" ? "↑" : "-") : "↕"}
                   </span>
                 </button>
               </th>
               <th className="px-4 py-3 text-left font-medium text-gray-600">
-                Termin płatności
+                <button
+                  onClick={() => {
+                    if (sortField === "termin_platnosci") {
+                      setSortDirection((prev) => prev === "desc" ? "asc" : prev === "asc" ? "none" : "desc");
+                    } else {
+                      setSortField("termin_platnosci");
+                      setSortDirection("asc");
+                    }
+                  }}
+                  className="inline-flex items-center gap-1"
+                >
+                  Termin płatności
+                  <span className="text-xs text-gray-400">
+                    {sortField === "termin_platnosci" ? (sortDirection === "desc" ? "↓" : sortDirection === "asc" ? "↑" : "-") : "↕"}
+                  </span>
+                </button>
               </th>
               <th className="px-4 py-3 text-right font-medium text-gray-600">
-                Kwota brutto
+                <button
+                  onClick={() => {
+                    if (sortField === "kwota_brutto") {
+                      setSortDirection((prev) => prev === "desc" ? "asc" : prev === "asc" ? "none" : "desc");
+                    } else {
+                      setSortField("kwota_brutto");
+                      setSortDirection("desc");
+                    }
+                  }}
+                  className="inline-flex items-center gap-1"
+                >
+                  Kwota brutto
+                  <span className="text-xs text-gray-400">
+                    {sortField === "kwota_brutto" ? (sortDirection === "desc" ? "↓" : sortDirection === "asc" ? "↑" : "-") : "↕"}
+                  </span>
+                </button>
               </th>
               <th className="px-4 py-3 text-left font-medium text-gray-600">
                 Forma płatności
               </th>
               <th className="px-4 py-3 text-left font-medium text-gray-600">
-                Status
+                <button
+                  onClick={() => {
+                    if (sortField === "status") {
+                      setSortDirection((prev) => prev === "desc" ? "asc" : prev === "asc" ? "none" : "desc");
+                    } else {
+                      setSortField("status");
+                      setSortDirection("asc");
+                    }
+                  }}
+                  className="inline-flex items-center gap-1"
+                >
+                  Status
+                  <span className="text-xs text-gray-400">
+                    {sortField === "status" ? (sortDirection === "desc" ? "↓" : sortDirection === "asc" ? "↑" : "-") : "↕"}
+                  </span>
+                </button>
               </th>
               <th className="px-4 py-3 text-left font-medium text-gray-600">
                 Akcje
@@ -496,19 +569,21 @@ export default function FakturyList() {
                   <td className="px-4 py-3 whitespace-nowrap">
                     {getFormaPlatnosci(faktura.forma_platnosci)}
                   </td>
-                  <td className="px-4 py-3 whitespace-nowrap">
+                   <td className="px-4 py-3 whitespace-nowrap">
                     {isKorekta ? (
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-xs font-semibold border ${
-                          faktura.czy_rozliczona
-                            ? "bg-green-100 text-green-800 border-green-200"
-                            : "bg-red-100 text-red-800 border-red-200"
-                        }`}
-                      >
-                        {faktura.czy_rozliczona
-                          ? "Rozliczona"
-                          : "Nierozliczona"}
-                      </span>
+                      <div className="flex flex-col gap-1">
+                        {/* status eksportu tylko jeśli nie NOWA */}
+                        {faktura.status !== "NOWA" && getStatusBadge(faktura.status)}
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-xs font-semibold border ${
+                            faktura.czy_rozliczona
+                              ? "bg-green-100 text-green-800 border-green-200"
+                              : "bg-red-100 text-red-800 border-red-200"
+                          }`}
+                        >
+                          {faktura.czy_rozliczona ? "Rozliczona" : "Nierozliczona"}
+                        </span>
+                      </div>
                     ) : (
                       getStatusBadge(faktura.status)
                     )}

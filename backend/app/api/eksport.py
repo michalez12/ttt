@@ -14,8 +14,6 @@ from ..services.bank_generator import BankXMLGenerator
 router = APIRouter(prefix="/api/eksport", tags=["Eksport"])
 
 
-# ── Endpointy MPP ────────────────────────────────────────────────────────────
-
 class MPPBulkUpdate(BaseModel):
     ids: List[int]
     enabled: bool
@@ -28,7 +26,6 @@ async def set_mpp_flag(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Ustawia/zdejmuje flagę MPP na pojedynczej fakturze."""
     faktura = db.query(Faktura).filter(Faktura.id == faktura_id).first()
     if not faktura:
         raise HTTPException(status_code=404, detail="Faktura nie istnieje")
@@ -43,7 +40,6 @@ async def set_mpp_bulk(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Ustawia/zdejmuje flagę MPP na wielu fakturach naraz."""
     updated = (
         db.query(Faktura)
         .filter(Faktura.id.in_(payload.ids))
@@ -53,18 +49,12 @@ async def set_mpp_bulk(
     return {"updated": updated, "enabled": payload.enabled}
 
 
-# ── Generowanie XML ──────────────────────────────────────────────────────────
-
 @router.post("/generate")
 async def generate_bank_xml(
     faktura_ids: List[int],
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Generuje plik XML dla banku (pain.001.001.09) na podstawie wybranych faktur.
-    MPP jest stosowane wyłącznie dla faktur z ręcznie ustawioną flagą mpp_enabled=True.
-    """
     faktury = db.query(Faktura).filter(Faktura.id.in_(faktura_ids)).all()
     if not faktury:
         raise HTTPException(status_code=404, detail="Nie znaleziono faktur")
@@ -102,7 +92,6 @@ async def generate_bank_xml(
             },
         )
 
-    # Dane firmy z profilu użytkownika
     firma_data = {
         "nazwa": current_user.firma_nazwa or "Brak nazwy firmy",
         "nip": current_user.firma_nip or "",
@@ -121,30 +110,100 @@ async def generate_bank_xml(
     faktury_data: list[dict] = []
     suma_kwot = 0.0
 
-    for faktura in faktury:
-        kwota_brutto = float(faktura.kwota_brutto)
-        kwota_vat = float(faktura.kwota_vat) if faktura.kwota_vat is not None else 0.0
-        kontrahent_nip = faktura.kontrahent.nip if faktura.kontrahent else ""
+    fa = [f for f in faktury if not getattr(f, "czy_korekta", False)]
+    fk = [f for f in faktury if getattr(f, "czy_korekta", False)]
 
-        # MPP tylko jeśli ręcznie ustawione przez użytkownika
-        is_mpp = bool(faktura.mpp_enabled)
+    kontrahent_ids = {f.kontrahent_id for f in faktury}
+    rachunek_ids = {f.rachunek_id for f in faktury}
+
+    same_kontrahent = len(kontrahent_ids) == 1
+    same_rachunek = len(rachunek_ids) == 1
+
+    can_compensate = (
+        same_kontrahent
+        and same_rachunek
+        and len(fa) >= 1
+        and len(fk) >= 1
+    )
+
+    if can_compensate:
+        kwota_fa = sum(float(f.kwota_brutto) for f in fa)
+        kwota_fk = sum(abs(float(f.kwota_brutto)) for f in fk)
+        kwota_netto = kwota_fa - kwota_fk
+
+        vat_fa = sum(float(f.kwota_vat or 0) for f in fa)
+
+        if kwota_netto <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": (
+                        f"Po uwzględnieniu korekt wychodzi kwota {kwota_netto:.2f} PLN. "
+                        "Zaznacz faktury tak, aby suma była dodatnia."
+                    ),
+                },
+            )
+
+        base = fa[0]
+        kontrahent_nip = base.kontrahent.nip if base.kontrahent else ""
+
+        tytul_fa = ", ".join(f.numer_faktury for f in fa) or "-"
+        tytul_fk = ", ".join(f.numer_faktury for f in fk) or "-"
 
         faktury_data.append(
             {
-                "numer_ksef": faktura.numer_ksef,
-                "numer_faktury": faktura.numer_faktury,
-                "kontrahent_nazwa": faktura.kontrahent.nazwa,
+                "numer_ksef": None,
+                "numer_faktury": fa[0].numer_faktury,
+                "opis_kompensaty": f"FV: {tytul_fa} FK {tytul_fk}",
+                "kontrahent_nazwa": base.kontrahent.nazwa,
                 "kontrahent_nip": kontrahent_nip,
-                "rachunek_iban": faktura.rachunek.iban,
-                "nazwa_banku": faktura.rachunek.nazwa_banku,
-                "kwota_brutto": kwota_brutto,
-                "kwota_vat": kwota_vat,
-                "waluta": faktura.waluta,
-                "termin_platnosci": faktura.termin_platnosci,
-                "is_mpp": is_mpp,
+                "rachunek_iban": base.rachunek.iban,
+                "nazwa_banku": base.rachunek.nazwa_banku,
+                "kwota_brutto": kwota_netto,
+                "kwota_vat": vat_fa,
+                "waluta": base.waluta,
+                "termin_platnosci": base.termin_platnosci,
+                "is_mpp": True,
             }
         )
-        suma_kwot += kwota_brutto
+        suma_kwot = kwota_netto
+
+    else:
+        for faktura in faktury:
+            kwota_brutto = float(faktura.kwota_brutto)
+
+            if kwota_brutto <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": (
+                            f"Faktura {faktura.numer_faktury} ma kwotę ujemną lub zero. "
+                            "Dodaj ją razem z fakturą pierwotną, aby rozliczyć korektę."
+                        ),
+                    },
+                )
+
+            kwota_vat = (
+                float(faktura.kwota_vat) if faktura.kwota_vat is not None else 0.0
+            )
+            kontrahent_nip = faktura.kontrahent.nip if faktura.kontrahent else ""
+
+            faktury_data.append(
+                {
+                    "numer_ksef": faktura.numer_ksef,
+                    "numer_faktury": faktura.numer_faktury,
+                    "kontrahent_nazwa": faktura.kontrahent.nazwa,
+                    "kontrahent_nip": kontrahent_nip,
+                    "rachunek_iban": faktura.rachunek.iban,
+                    "nazwa_banku": faktura.rachunek.nazwa_banku,
+                    "kwota_brutto": kwota_brutto,
+                    "kwota_vat": kwota_vat,
+                    "waluta": faktura.waluta,
+                    "termin_platnosci": faktura.termin_platnosci,
+                    "is_mpp": True,
+                }
+            )
+            suma_kwot += kwota_brutto
 
     generator = BankXMLGenerator(firma_data)
     xml_content = generator.generate(faktury_data)

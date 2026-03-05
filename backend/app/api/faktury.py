@@ -232,6 +232,28 @@ async def get_faktury(
         "limit": limit,
     }
 
+@router.get("/debug/{faktura_id}")
+async def debug_faktura(
+    faktura_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    faktura = db.query(Faktura).filter(Faktura.id == faktura_id).first()
+    if not faktura:
+        raise HTTPException(status_code=404, detail="Nie znaleziono faktury")
+
+    return {
+        "id": faktura.id,
+        "numer_faktury": faktura.numer_faktury,
+        "kontrahent_id": faktura.kontrahent_id,
+        "kontrahent_nazwa": faktura.kontrahent.nazwa if faktura.kontrahent else None,
+        "rachunek_id": faktura.rachunek_id,
+        "rachunek_iban": faktura.rachunek.iban if faktura.rachunek else None,
+        "czy_korekta": getattr(faktura, "czy_korekta", None),
+        "kwota_brutto": float(faktura.kwota_brutto),
+        "kwota_vat": float(faktura.kwota_vat or 0),
+    }
+
 
 @router.get("/kontrahenci/summary")
 async def get_kontrahenci_summary(
